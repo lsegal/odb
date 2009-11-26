@@ -1,5 +1,6 @@
 require 'set'
 require 'fileutils'
+require 'json'
 
 module ODB
   def self.new(store = nil)
@@ -43,30 +44,46 @@ module ODB
         ObjectSpace._id2ref(oid)
       else
         obj = read_object(key)
-        @object_map[key] = obj.object_id
+        @object_map[key] = object_key(obj)
         obj
       end
     end
     
     def write(key, value)
-      if Symbol === key
-        key = (key_cache[key] = value.object_id) 
-        @object_map[key] = value.object_id
-        return
+      if Transaction.current
+        write_in_transaction(key, value)
+      else
+        db.transaction { write_in_transaction(key, value) }
       end
-      @object_map[key] = value.object_id
-      write_object(key, value)
     end
     
     def [](key) read(key) end
     def []=(key, value) write(key, value) end
+      
+    def add(object) self[object_key(object)] = object end
 
     def after_commit; end
       
     protected
     
+    def object_key(object) object.__serialize_key__ end
     def read_object(key) raise NotImplementedError end
     def write_object(key, value) raise NotImplementedError end
+      
+    private
+    
+    def write_in_transaction(key, value)
+      key = (key_cache[key] = object_key(value)) if Symbol === key
+
+      if Transaction.current.in_commit?
+        p "Committing #{key}"
+        @object_map[key] = object_key(value)
+        write_object(key, value)
+      elsif !Transaction.current.objects.include?(value)
+        p "Queuing #{key}"
+        value.__queue__
+      end
+    end
   end
   
   class Transaction
@@ -83,25 +100,34 @@ module ODB
     def initialize(db = ODB.current, &block)
       @objects = Set.new
       @db = db
+      @committing = false
       transaction(&block) if block_given?
     end
     
     def transaction(&block)
       objects_before = persistent_objects
-      self.class.transactions << self
+      self.class.transactions.push(self)
       yield
-      self.objects << (persistent_objects - objects_before)
+      self.objects += (persistent_objects - objects_before)
       commit
       self.class.transactions.pop
     end
     
+    def in_commit?
+      @committing
+    end
+    
     def commit
-      self.objects = objects.to_a
-      while objects.size > 0
-        object = objects.pop
-        @db.store[object.object_id] = object
+      @committing = true
+      objs = objects.to_a
+      self.objects.freeze
+      while objs.size > 0
+        object = objs.pop
+        @db.store.add(object)
       end
       @db.store.after_commit
+      self.objects = Set.new
+      @committing = false
     end
     
     def persistent_objects
@@ -114,13 +140,13 @@ module ODB
       super(name)
       FileUtils.mkdir_p(name)
       if File.file?(resource("__key_cache"))
-        @key_cache = Marshal.load(IO.read(resource("__key_cache")))
+        @key_cache = unmarshal(IO.read(resource("__key_cache")))
       end
     end
     
     def after_commit
       File.open(resource("__key_cache"), "wb") do |file|
-        file.write(Marshal.dump(key_cache))
+        file.write(marshal(key_cache))
       end
     end
 
@@ -131,16 +157,24 @@ module ODB
     end
 
     def read_object(key)
-      Marshal.load(IO.read(resource(key))).__deserialize__
+      unmarshal(IO.read(resource(key))).__deserialize__
     end
     
     def write_object(key, value)
       resource = resource(key)
       FileUtils.mkdir_p(File.dirname(resource))
       File.open(resource, "wb") do |file|
-        file.write(Marshal.dump(value.__serialize__))
+        file.write(marshal(value.__serialize__))
       end
     end
+    
+    def marshal(data) Marshal.dump(data) end
+    def unmarshal(data) Marshal.load(data) end
+  end
+  
+  class JSONStore < FileStore
+    def marshal(data) data.to_json end
+    def unmarshal(data) JSON.parse(data) end
   end
   
   class HashStore < DataStore
@@ -160,54 +194,115 @@ module ODB
 end
 
 class Object
+  def __serialize_key__; object_id end
+  
+  def __immediate__; false end
+  
   def __serialize__(transaction = ODB::Transaction.current)
     obj = {:class => self.class, :ivars => {}}
     instance_variables.each do |ivar|
       subobj = instance_variable_get(ivar)
-      transaction.objects << subobj unless Fixnum === subobj
-      obj[:ivars][ivar[1..-1]] = Fixnum === subobj ? subobj.__serialize__ : subobj.object_id
+      obj[:ivars][ivar[1..-1]] = subobj.__immediate__ ? subobj.__serialize__ : subobj.__serialize_key__
     end
     obj
+  end
+  
+  def __queue__(transaction = ODB::Transaction.current)
+    return if transaction.objects.include?(self)
+    transaction.objects << self
+    instance_variables.each do |ivar|
+      instance_variable_get(ivar).__queue__(transaction)
+    end
+  end
+  
+  def __deserialize__(db = nil)
+    self
   end
 end
 
 class String
-  def __serialize__(transaction = nil)
-    super().update(:value => self)
+  def __immediate__; instance_variables.empty? end
+  
+  def __serialize__
+    __immediate__ ? self : super().update(:value => self)
+  end
+  
+  def __queue__(transaction = ODB::Transaction.current)
+    super unless __immediate__
   end
 end
 
 class Array
-  def __serialize__(transaction = ODB::Transaction.current)
+  def __serialize__
     obj = super
-    obj[:type] = :array
+    obj[:type] = 'array'
     obj[:items] = map do |item|
-      transaction.objects << item 
-      item.object_id
+      item.__immediate__ ? item.__serialize__ : item.__serialize_key__
     end
     obj
   end
+  
+  def __queue__(transaction = ODB::Transaction.current)
+    super
+    each {|item| item.__queue__(transaction) }
+  end
+end
+
+module Immediate
+  def __immediate__; true end
+  def __serialize__; self end
+  def __queue__(transaction = nil) end
 end
 
 class Fixnum
-  def __serialize__(transaction = nil)
-    {:class => Fixnum, :value => self}
+  include Immediate
+  
+  def __serialize__; {:class => Fixnum, :value => self} end
+end
+
+class Symbol
+  include Immediate
+  
+  def __serialize__; {:class => Symbol, :value => self} end
+end
+
+class TrueClass
+  include Immediate
+end
+
+class FalseClass
+  include Immediate
+end
+
+class NilClass
+  include Immediate
+
+  def __deserialize__(db = nil)
+    nil
   end
 end
 
 class Float
-  def __serialize__(transaction = nil)
+  def __serialize__
     super().update(:value => self)
   end
 end
 
 class Hash
-  def __serialize__(transaction = ODB::Transaction.current)
+  def __queue__(transaction = ODB::Transaction.current)
+    super
+    each {|k, v| k.__queue__(transaction); v.__queue__(transaction) }
+  end
+  
+  def __serialize__
     obj = super
-    obj[:type] = :hash
+    obj[:type] = 'hash'
     obj[:items] = map do |k, v|
-      transaction.objects.push(k.object_id, v.object_id)
-      [k.object_id, v.object_id]
+      items = []
+      [k, v].each do |item|
+        items << (item.__immediate__ ? item.__serialize__ : item.__serialize_key__)
+      end
+      items
     end
     obj
   end
@@ -218,9 +313,9 @@ class Hash
       object.instance_variable_set("@#{ivar}", Hash === value ? value[:value] : db.store[value])
     end
     case self[:type]
-    when :array
+    when 'array'
       object.replace(self[:list].map {|item| db.store[item] })
-    when :hash
+    when 'hash'
       self[:list].each do |values|
         object[db.store[values[0]]] = object[db.store[values[1]]]
       end
@@ -229,8 +324,3 @@ class Hash
   end
 end
 
-class NilClass
-  def __deserialize__(db = nil)
-    nil
-  end
-end
