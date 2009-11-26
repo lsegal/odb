@@ -1,0 +1,5 @@
+= ODB
+
+A Ruby Object Database
+
+Loren Segal &copy; 2009
