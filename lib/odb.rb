@@ -234,30 +234,3 @@ class NilClass
     nil
   end
 end
-
-class Post
-  include ODB::Persistent
-  attr_accessor :title, :author, :comment
-end
-
-class Comment
-  include ODB::Persistent
-
-  def initialize
-    @name = 1
-    @value = 2.5
-  end
-end
-
-db = ODB.new(ODB::FileStore.new("hello"))
-db.transaction do
-  post = Post.new.tap {|p| p.title = "x"; p.author = "Joe"; p.comment = Comment.new }
-  db.store[:post] = post
-  db.store[:comment] = post.comment
-end
-
-p db.store[:post]
-# #<Post:0x100123170 @comment=#<Comment:0x100123030 @name=1, @value=2.5>, @author="Joe", @title="x">
- 
-p db.store[:post].comment.object_id == db.store[:comment].object_id
-# true
