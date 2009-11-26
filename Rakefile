@@ -44,4 +44,9 @@ rescue LoadError
   warn "warn: RSpec tests not available. `gem install rspec` to enable them."
 end
 
-YARD::Rake::YardocTask.new
+begin
+  require 'yard'
+  YARD::Rake::YardocTask.new
+rescue LoadError
+  warn "warn: YARD is not available. `gem install yard` to enable documentation generation"
+end
