@@ -1,5 +1,108 @@
-= ODB
+= ODB: A Ruby Object Database
 
-A Ruby Object Database
+== Synopsis
 
-Loren Segal &copy; 2009
+ODB attempts to be a transparent persistence layer in the Ruby interpreter
+inspired by Object Oriented Databases like Python's Zope Object Database and
+more recently, MagLev. The goal is to make object persistence as invisible
+as possible in Ruby, though full transparency (as MagLev attempts) can
+never really be possible.
+
+== Quick Start
+
+ODB looks very similar to a standard key-value store database such as 
+Memcached, Redis, or Tokyo Tyrant. For instance, we create a database
+and access objects by key names as follows:
+
+  require 'odb'
+  
+  db = ODB.new
+  db[:key] = "Hello"
+  # and now...
+  db[:key] == "Hello" # => true
+  
+This is very basic usage. Unlike key-value stores, however, it is possible
+to store and access objects implicitly, without directly assigning them
+a key. We will see this more with persistent objects
+  
+== Persistent Objects
+
+Persistent objects allow a more transparent form of storing objects. To
+mark a method as persistent, simply include the +Persistent+ module:
+
+  class Post
+    include ODB::Persistent
+    
+    attr_accessor :title, :body
+    
+    def initialize(title, body)
+      @title, @body = title, body
+    end
+  end
+  
+You can now benefit from transparent saves in transactions.
+
+== Transactions
+
+ODB supports very basic transactions right now. A simple example of a
+transaction is:
+
+  db = ODB.new
+  db.transaction do
+    post = Post.new("foo", "bar")
+  end
+  
+At this point, the +Post+ object will now be persisted either in memory or
+on disk (whichever datastore you use). This implicit storage only works for
+newly created objects, not modified ones. If post were to be modified, it
+would need to be marked for a save. Hopefully this API can also become more
+transparent, though it seems unlikely with Ruby's object model. To save
+a modified object, queue it:
+
+  db.transaction do
+    post.title = "something else"
+    post.__queue__
+  end
+  
+== Implict Key Names
+
+You may be wondering how to read the post back out after it's been persisted
+to disk. This is why symbolic key-names are used in key-value stores. We can
+use the following to save the object to a specific symbolic name as we
+did in the first example:
+
+  db[:key] = post
+  
+However we can create generalized key names for any new post object, to
+implicitly key any saved post object by a symbolic determinate name. All
+we need to do is override +__serialize_key__+ to return a Symbol:
+
+  class Post
+    def __serialize_key__; title.to_sym end
+  end
+
+Here we return the title, since we assume it is unique for the purpose of
+this example. Now when we do:
+
+  posts = []
+  db.transaction do
+    posts << Post.new("title1", "body1")
+    posts << Post.new("title2", "body2")
+  end
+  
+We can access both objects as:
+
+  db[:title1] # => #<Post:0x000001011dfe30 @title="title1", @body="body1">
+  db[:title2] # => #<Post:0x00000101379550 @title="title2", @body="body2">
+
+== The Supported Data Stores
+
+Currently ODB has support for in-memory, on-disk and JSON (also on-disk)
+data stores. One benefit is that it is possible to write a wrapper for any
+key-value data store such as memcached, redis, mongo, etc.. To implement
+a data store, you just need to implement the +read_object+ and +write_object+
+methods in the +Database+ class.
+
+== Copyright & License
+
+Copyright Loren Segal © 2009, licensed under the {file:LICENSE MIT License}

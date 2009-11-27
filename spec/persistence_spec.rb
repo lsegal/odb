@@ -4,6 +4,8 @@ require 'yard'
 class Post
   include ODB::Persistent
   attr_accessor :title, :author, :comment
+  
+  def __serialize_key__; title.to_sym end
 end
 
 class Comment
@@ -25,28 +27,39 @@ class YARD::CodeObjects::RootObject
   end
 end
 
+describe ODB::Database do
+  # it "should save a complex object" do
+  #   YARD.parse(File.dirname(__FILE__) + '/../lib/**/*.rb')
+  #   db = ODB.new(ODB::Fil.new("yard"))
+  #   db[:namespace] = YARD::Registry.instance.send(:namespace)
+  #   
+  #   db = ODB.new(ODB::Fil.new("yard"))
+  #   db[:namespace].should == YARD::Registry.instance.send(:namespace)
+  # end
+end
+
 describe ODB::Persistent do
   it "should save a post" do
-    db = ODB.new(ODB::FileStore.new("Hello"))
+    db = ODB.new
     post = Post.new.tap {|p| p.title = "x"; p.author = "Joe"; p.comment = Comment.new }
     db.transaction do
-      db.store[:post] = post
-      db.store[:comment] = post.comment
+      db[:post] = post
+      db[:comment] = post.comment
     end
-
-    db = ODB.new(ODB::FileStore.new("Hello"))
-    db.store[:post].title.should == "x"
-    db.store[:post].author.should == "Joe"
-    db.store[:post].comment.object_id.should == db.store[:comment].object_id
+    
+    db[:post].title.should == "x"
+    db[:post].author.should == "Joe"
+    db[:post].comment.object_id.should == db[:comment].object_id
   end
   
-  it "should save a complex object" do
-    YARD.parse(File.dirname(__FILE__) + '/../lib/**/*.rb')
-    db = ODB.new(ODB::FileStore.new("yard"))
-    db.store[:namespace] = YARD::Registry.instance.send(:namespace)
+  it "should perform implicit saves on Persistent objects" do
+    db = ODB.new
+    post = nil
+    db.transaction do
+      post = Post.new.tap {|p| p.title = "x"; p.author = "Joe"; p.comment = Comment.new }
+    end
     
-    db = ODB.new(ODB::FileStore.new("yard"))
-    db.store[:namespace].should == YARD::Registry.instance.send(:namespace)
+    db[:x].should == post
   end
 end
 

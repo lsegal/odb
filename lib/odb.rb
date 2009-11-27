@@ -3,39 +3,30 @@ require 'fileutils'
 require 'json'
 
 module ODB
+  # Shorthand for creating a new {Database}
   def self.new(store = nil)
-    Database.new(store || HashStore.new)
+    Database.current = store || HashStore.new
   end
   
   module Persistent
   end
   
   class Database
-    attr_accessor :store
-    
+    attr_reader :name, :key_cache
+
     class << self
       attr_accessor :current
     end
     
-    def initialize(store)
-      self.store = store
-      self.store.db = self
-      self.class.current = self unless self.class.current
-    end
-    
-    def transaction(*names, &block)
-      Transaction.new(self, *names, &block)
-    end
-  end
-  
-  class DataStore
-    attr_reader :name, :key_cache
-    attr_accessor :db
-    
     def initialize(name)
+      self.class.current = self unless self.class.current
       @name = name
       @key_cache = {}
       @object_map = {}
+    end
+
+    def transaction(*names, &block)
+      Transaction.new(self, *names, &block)
     end
     
     def read(key)
@@ -52,9 +43,9 @@ module ODB
       if Hash === data && !data.has_key?(:value)
         obj = data[:class].send(:allocate)
         @object_map[key] = obj.object_id
-        data.__deserialize__(db, obj)
+        data.__deserialize__(self, obj)
       else
-        obj = data.__deserialize__(db)
+        obj = data.__deserialize__(self)
       end
       @object_map[key] = obj.object_id
       obj
@@ -64,7 +55,7 @@ module ODB
       if Transaction.current
         write_in_transaction(key, value)
       else
-        db.transaction { write_in_transaction(key, value) }
+        transaction { write_in_transaction(key, value) }
       end
     end
     
@@ -119,7 +110,7 @@ module ODB
       self.class.transactions.push(self)
       yield
       (persistent_objects - objects_before).each {|obj| obj.__queue__(self) }
-      keys.each {|key| @db.store[key].__queue__(self) }
+      keys.each {|key| @db[key].__queue__(self) }
       commit
       self.class.transactions.pop
     end
@@ -134,9 +125,9 @@ module ODB
       self.objects.freeze
       while objs.size > 0
         object = objs.pop
-        @db.store.add(object)
+        @db.add(object)
       end
-      @db.store.after_commit
+      @db.after_commit
       self.objects = Set.new
       @committing = false
     end
@@ -146,7 +137,7 @@ module ODB
     end
   end
   
-  class FileStore < DataStore
+  class FileStore < Database
     def initialize(name)
       super(name)
       FileUtils.mkdir_p(name)
@@ -190,7 +181,7 @@ module ODB
     def unmarshal(data) JSON.parse(data) end
   end
   
-  class HashStore < DataStore
+  class HashStore < Database
     def initialize
       super(nil)
       @store = {}
@@ -280,7 +271,7 @@ class Symbol
   def __serialize__; {:class => Symbol, :value => self} end
   
   def __deserialize__(db = ODB::Database.current)
-    db.store[to_s]
+    db[to_s]
   end
 end
 
@@ -347,7 +338,7 @@ class Hash
   private
   
   def __reference__(value, db)
-    Fixnum === value ? db.store[value] : value.__deserialize__(db)
+    Fixnum === value ? db[value] : value.__deserialize__(db)
   end
 end
 
