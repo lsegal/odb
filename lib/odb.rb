@@ -23,8 +23,8 @@ module ODB
       self.class.current = self unless self.class.current
     end
     
-    def transaction(&block)
-      Transaction.new(self, &block)
+    def transaction(*names, &block)
+      Transaction.new(self, *names, &block)
     end
   end
   
@@ -40,20 +40,24 @@ module ODB
     
     def read(key)
       key = key_cache[key] if Symbol === key && key_cache[key]
-      if oid = @object_map[key]
-        ObjectSpace._id2ref(oid)
-      else
-        data = read_object(key)
-        if Hash === data && !data.has_key?(:value)
-          obj = data[:class].send(:allocate)
-          @object_map[key] = obj.object_id
-          data.__deserialize__(db, obj)
-        else
-          obj = data.__deserialize__(db)
+      
+      begin
+        if oid = @object_map[key]
+          return ObjectSpace._id2ref(oid)
         end
-        @object_map[key] = obj.object_id
-        obj
+      rescue RangeError
       end
+
+      data = read_object(key)
+      if Hash === data && !data.has_key?(:value)
+        obj = data[:class].send(:allocate)
+        @object_map[key] = obj.object_id
+        data.__deserialize__(db, obj)
+      else
+        obj = data.__deserialize__(db)
+      end
+      @object_map[key] = obj.object_id
+      obj
     end
     
     def write(key, value)
@@ -84,7 +88,7 @@ module ODB
 
       if Transaction.current.in_commit?
         puts "Committing #{key}" if $ODB_DEBUG
-        @object_map[key] = object_key(value)
+        @object_map[key] = value.object_id
         write_object(key, value.__serialize__)
       else
         value.__queue__
@@ -103,18 +107,19 @@ module ODB
       transactions.last
     end
     
-    def initialize(db = ODB.current, &block)
+    def initialize(db = ODB.current, *keys, &block)
       @objects = Set.new
       @db = db
       @committing = false
-      transaction(&block) if block_given?
+      transaction(*keys, &block) if block_given?
     end
     
-    def transaction(&block)
+    def transaction(*keys, &block)
       objects_before = persistent_objects
       self.class.transactions.push(self)
       yield
-      self.objects += (persistent_objects - objects_before)
+      (persistent_objects - objects_before).each {|obj| obj.__queue__(self) }
+      keys.each {|key| @db.store[key].__queue__(self) }
       commit
       self.class.transactions.pop
     end
