@@ -61,5 +61,14 @@ describe ODB::Persistent do
     
     db[:x].should == post
   end
+  
+  it "should save any new object creation through #initialize" do
+    db = ODB.new
+    db.transaction do
+      Post.new.tap {|p| p.title = "x" }
+    end
+    
+    db[:x].should be_a(Post)
+  end
 end
 

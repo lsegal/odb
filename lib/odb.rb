@@ -9,6 +9,10 @@ module ODB
   end
   
   module Persistent
+    def initialize(*args, &block)
+      super
+      __queue__ if Transaction.current
+    end
   end
   
   class Database
