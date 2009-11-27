@@ -39,12 +39,19 @@ module ODB
     end
     
     def read(key)
-      key = key_cache[key] if Symbol === key
+      key = key_cache[key] if Symbol === key && key_cache[key]
       if oid = @object_map[key]
         ObjectSpace._id2ref(oid)
       else
-        obj = read_object(key)
-        @object_map[key] = object_key(obj)
+        data = read_object(key)
+        if Hash === data && !data.has_key?(:value)
+          obj = data[:class].send(:allocate)
+          @object_map[key] = obj.object_id
+          data.__deserialize__(db, obj)
+        else
+          obj = data.__deserialize__(db)
+        end
+        @object_map[key] = obj.object_id
         obj
       end
     end
@@ -73,14 +80,13 @@ module ODB
     private
     
     def write_in_transaction(key, value)
-      key = (key_cache[key] = object_key(value)) if Symbol === key
+      key = (key_cache[key] = object_key(value)) if Symbol === key && object_key(value) != key
 
       if Transaction.current.in_commit?
-        p "Committing #{key}"
+        puts "Committing #{key}" if $ODB_DEBUG
         @object_map[key] = object_key(value)
-        write_object(key, value)
-      elsif !Transaction.current.objects.include?(value)
-        p "Queuing #{key}"
+        write_object(key, value.__serialize__)
+      else
         value.__queue__
       end
     end
@@ -157,14 +163,16 @@ module ODB
     end
 
     def read_object(key)
-      unmarshal(IO.read(resource(key))).__deserialize__
+      unmarshal(IO.read(resource(key)))
+    rescue Errno::ENOENT
+      nil
     end
     
     def write_object(key, value)
       resource = resource(key)
       FileUtils.mkdir_p(File.dirname(resource))
       File.open(resource, "wb") do |file|
-        file.write(marshal(value.__serialize__))
+        file.write(marshal(value))
       end
     end
     
@@ -184,11 +192,11 @@ module ODB
     end
     
     def read_object(key)
-      @store[key].__deserialize__(db)
+      @store[key]
     end
     
     def write_object(key, value)
-      @store[key] = value.__serialize__
+      @store[key] = value
     end
   end
 end
@@ -208,7 +216,8 @@ class Object
   end
   
   def __queue__(transaction = ODB::Transaction.current)
-    return if transaction.objects.include?(self)
+    return if transaction.objects.include?(self) || __immediate__
+    puts "Queuing #{__serialize_key__}" if $ODB_DEBUG
     transaction.objects << self
     instance_variables.each do |ivar|
       instance_variable_get(ivar).__queue__(transaction)
@@ -264,6 +273,10 @@ class Symbol
   include Immediate
   
   def __serialize__; {:class => Symbol, :value => self} end
+  
+  def __deserialize__(db = ODB::Database.current)
+    db.store[to_s]
+  end
 end
 
 class TrueClass
@@ -307,20 +320,29 @@ class Hash
     obj
   end
   
-  def __deserialize__(db = ODB::Database.current)
-    object = self[:value] ? self[:value] : self[:class].allocate
+  def __deserialize__(db = ODB::Database.current, object = nil)
+    puts "Deserializing #{self.inspect}" if $ODB_DEBUG
+    object ||= self[:value] ? self[:value] : self[:class].send(:allocate)
     self[:ivars].each do |ivar, value|
-      object.instance_variable_set("@#{ivar}", Hash === value ? value[:value] : db.store[value])
-    end
+      object.instance_variable_set("@#{ivar}", __reference__(value, db))
+    end if self[:ivars]
     case self[:type]
     when 'array'
-      object.replace(self[:list].map {|item| db.store[item] })
+      object.replace(self[:items].map {|item| __reference__(item, db) })
     when 'hash'
-      self[:list].each do |values|
-        object[db.store[values[0]]] = object[db.store[values[1]]]
+      hsh = {}
+      self[:items].each do |values|
+        hsh[__reference__(values[0], db)] = __reference__(values[1], db)
       end
+      object.replace(hsh)
     end
     object
+  end
+  
+  private
+  
+  def __reference__(value, db)
+    Fixnum === value ? db.store[value] : value.__deserialize__(db)
   end
 end
 
