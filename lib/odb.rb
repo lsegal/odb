@@ -43,16 +43,9 @@ module ODB
       rescue RangeError
       end
 
-      data = read_object(key)
-      if Hash === data && !data.has_key?(:value)
-        obj = data[:class].send(:allocate)
-        @object_map[key] = obj.object_id
-        data.__deserialize__(self, obj)
-      else
-        obj = data.__deserialize__(self)
-      end
+      obj = read_object(key)
       @object_map[key] = obj.object_id
-      obj
+      obj.__deserialize__(self)
     end
     
     def write(key, value)
@@ -82,7 +75,7 @@ module ODB
       key = (key_cache[key] = object_key(value)) if Symbol === key && object_key(value) != key
 
       if Transaction.current.in_commit?
-        puts "Committing #{key}" if $ODB_DEBUG
+        puts "Committing #{key} => #{value.inspect}" if $ODB_DEBUG
         @object_map[key] = value.object_id
         write_object(key, value.__serialize__)
       else
@@ -132,6 +125,7 @@ module ODB
         @db.add(object)
       end
       @db.after_commit
+    ensure
       self.objects = Set.new
       @committing = false
     end
@@ -199,6 +193,17 @@ module ODB
       @store[key] = value
     end
   end
+  
+  module Types
+    class ImmediateType
+      attr_accessor :value
+      def initialize(value) @value = value end
+      def __deserialize__(db = nil) value end
+    end
+    
+    class Fixnum < ImmediateType; end 
+    class Symbol < ImmediateType; end
+  end
 end
 
 class Object
@@ -206,11 +211,13 @@ class Object
   
   def __immediate__; false end
   
-  def __serialize__(transaction = ODB::Transaction.current)
-    obj = {:class => self.class, :ivars => {}}
+  def __serialize__(reference = false)
+    return self if __immediate__
+    return __serialize_key__ if reference
+    obj = dup
     instance_variables.each do |ivar|
       subobj = instance_variable_get(ivar)
-      obj[:ivars][ivar[1..-1]] = subobj.__immediate__ ? subobj.__serialize__ : subobj.__serialize_key__
+      obj.instance_variable_set(ivar, subobj.__serialize__(true))
     end
     obj
   end
@@ -225,6 +232,11 @@ class Object
   end
   
   def __deserialize__(db = nil)
+    puts "Deserializing #{self.class}" if $ODB_DEBUG
+    instance_variables.each do |ivar|
+      obj = instance_variable_get(ivar)
+      instance_variable_set(ivar, obj.__deserialize__(db))
+    end
     self
   end
 end
@@ -232,22 +244,15 @@ end
 class String
   def __immediate__; instance_variables.empty? end
   
-  def __serialize__
-    __immediate__ ? self : super().update(:value => self)
-  end
-  
   def __queue__(transaction = ODB::Transaction.current)
     super unless __immediate__
   end
 end
 
 class Array
-  def __serialize__
+  def __serialize__(reference = false)
     obj = super
-    obj[:type] = 'array'
-    obj[:items] = map do |item|
-      item.__immediate__ ? item.__serialize__ : item.__serialize_key__
-    end
+    obj.replace map {|item| item.__serialize__(true) } unless reference
     obj
   end
   
@@ -255,24 +260,34 @@ class Array
     super
     each {|item| item.__queue__(transaction) }
   end
+  
+  def __deserialize__(db = ODB::Database.current)
+    super
+    replace map {|item| item.__deserialize__(db) }
+  end
 end
 
 module Immediate
   def __immediate__; true end
-  def __serialize__; self end
+  def __serialize__(reference = false) self end
+  def __deserialize__(db = nil) self end
   def __queue__(transaction = nil) end
 end
 
 class Fixnum
   include Immediate
   
-  def __serialize__; {:class => Fixnum, :value => self} end
+  def __serialize__(reference = false) ODB::Types::Fixnum.new(self) end
+
+  def __deserialize__(db = ODB::Database.current)
+    db[self]
+  end
 end
 
 class Symbol
   include Immediate
   
-  def __serialize__; {:class => Symbol, :value => self} end
+  def __serialize__(reference = false) ODB::Types::Symbol.new(self) end
   
   def __deserialize__(db = ODB::Database.current)
     db[to_s]
@@ -289,16 +304,10 @@ end
 
 class NilClass
   include Immediate
-
-  def __deserialize__(db = nil)
-    nil
-  end
 end
 
 class Float
-  def __serialize__
-    super().update(:value => self)
-  end
+  include Immediate
 end
 
 class Hash
@@ -307,42 +316,16 @@ class Hash
     each {|k, v| k.__queue__(transaction); v.__queue__(transaction) }
   end
   
-  def __serialize__
+  def __serialize__(reference = false)
     obj = super
-    obj[:type] = 'hash'
-    obj[:items] = map do |k, v|
-      items = []
-      [k, v].each do |item|
-        items << (item.__immediate__ ? item.__serialize__ : item.__serialize_key__)
-      end
-      items
+    unless reference
+      obj.replace Hash[*map {|k, v| [k.__serialize__(true), v.__serialize__(true)] }.flatten]
     end
     obj
   end
   
-  def __deserialize__(db = ODB::Database.current, object = nil)
-    puts "Deserializing #{self.inspect}" if $ODB_DEBUG
-    object ||= self[:value] ? self[:value] : self[:class].send(:allocate)
-    self[:ivars].each do |ivar, value|
-      object.instance_variable_set("@#{ivar}", __reference__(value, db))
-    end if self[:ivars]
-    case self[:type]
-    when 'array'
-      object.replace(self[:items].map {|item| __reference__(item, db) })
-    when 'hash'
-      hsh = {}
-      self[:items].each do |values|
-        hsh[__reference__(values[0], db)] = __reference__(values[1], db)
-      end
-      object.replace(hsh)
-    end
-    object
-  end
-  
-  private
-  
-  def __reference__(value, db)
-    Fixnum === value ? db[value] : value.__deserialize__(db)
+  def __deserialize__(db = ODB::Database.current)
+    replace Hash[*map {|k, v| [k.__deserialize__(db), v.__deserialize__(db)] }.flatten]
   end
 end
 

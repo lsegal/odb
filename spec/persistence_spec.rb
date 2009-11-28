@@ -16,26 +16,29 @@ class Comment
 end
 
 class YARD::CodeObjects::Base
-  def __serialize_key__
-    path.to_sym
+  def __serialize_key__; path.to_sym end
+end
+
+class YARD::CodeObjects::Proxy
+  def __serialize__(reference = false)
+    path
+    super
   end
 end
 
 class YARD::CodeObjects::RootObject
-  def __serialize_key__
-    :root
-  end
+  def __serialize_key__; :root end
 end
 
 describe ODB::Database do
-  # it "should save a complex object" do
-  #   YARD.parse(File.dirname(__FILE__) + '/../lib/**/*.rb')
-  #   db = ODB.new(ODB::Fil.new("yard"))
-  #   db[:namespace] = YARD::Registry.instance.send(:namespace)
-  #   
-  #   db = ODB.new(ODB::Fil.new("yard"))
-  #   db[:namespace].should == YARD::Registry.instance.send(:namespace)
-  # end
+  it "should save a complex object" do
+    YARD.parse(File.dirname(__FILE__) + '/../lib/**/*.rb')
+    db = ODB.new(ODB::FileStore.new("yard"))
+    db[:namespace] = YARD::Registry.at('ODB::Types')
+    
+    db = ODB.new(ODB::FileStore.new("yard"))
+    db[:namespace].should == YARD::Registry.instance.send(:namespace)
+  end
 end
 
 describe ODB::Persistent do
