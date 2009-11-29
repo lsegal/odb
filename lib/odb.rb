@@ -63,7 +63,9 @@ module ODB
       
     def add(object) self[object_key(object)] = object end
 
-    def after_commit; end
+    def begin_commit(transaction) end
+    def commit(transaction) end
+    def failed_commit(transaction) end
       
     protected
     
@@ -81,6 +83,10 @@ module ODB
         puts "Committing #{key} => #{serialized.inspect}" if $ODB_DEBUG
         @object_cache[key] = value.object_id
         write_object(key, serialized)
+      elsif value.__immediate__
+        # Force queue of immediate objects assigned directly to key
+        puts "Queueing #{value.__serialize_key__} => #{value.inspect}" if $ODB_DEBUG
+        Transaction.current.objects << value
       else
         value.__queue__
       end
@@ -96,13 +102,13 @@ module ODB
     
     def push(*args)
       args.each do |arg|
-        @set[arg.object_id] = arg
+        @set[arg.__serialize_key__] = arg
       end
     end
     def <<(*args) push(*args) end
     
     def include?(object)
-      @set.has_key?(object.object_id)
+      @set.has_key?(object.__serialize_key__)
     end
       
     def each(&block)
@@ -145,16 +151,21 @@ module ODB
     
     def commit
       @committing = true
+      db.begin_commit(self)
       objs = objects.to_a
       self.objects = TransactionSet.new
-      objs.each {|o| o.__queue__(self) }
+      objs.each {|o| o.__immediate__ ? objects << o : o.__queue__(self) }
       objs = objects.to_a
       self.objects.freeze
       while objs.size > 0
         object = objs.pop
         db.add(object)
       end
-      db.after_commit
+      db.commit(self)
+      true
+    rescue
+      db.failed_commit(self)
+      raise
     ensure
       self.objects = TransactionSet.new
       @committing = false
@@ -174,10 +185,22 @@ module ODB
       end
     end
     
-    def after_commit
+    def begin_commit(transaction)
+      @transaction_objects = []
+    end
+    
+    def commit(transaction)
       File.open(resource("__key_map"), "wb") do |file|
         file.write(marshal(key_map))
       end
+      @transaction_objects.each do |fname|
+        FileUtils.mv(fname, fname.gsub(/\.tmp$/, ''), :force => true)
+      end
+      @transaction_objects = nil
+    end
+    
+    def failed_commit(transaction)
+      @transaction_objects = nil
     end
 
     protected
@@ -193,11 +216,12 @@ module ODB
     end
     
     def write_object(key, value)
-      resource = resource(key)
+      resource = resource(key) + ".tmp"
       FileUtils.mkdir_p(File.dirname(resource))
       File.open(resource, "wb") do |file|
         file.write(marshal(value))
       end
+      @transaction_objects << resource
     end
     
     def marshal(data) Marshal.dump(data) end
@@ -215,12 +239,25 @@ module ODB
       @store = {}
     end
     
+    def begin_commit(transaction)
+      @transaction = {}
+    end
+    
+    def commit(transaction)
+      @store.update(@transaction)
+      @transaction = nil
+    end
+    
+    def failed_commit(transaction)
+      @transaction = nil
+    end
+    
     def read_object(key)
       @store[key]
     end
     
     def write_object(key, value)
-      @store[key] = value
+      @transaction[key] = value
     end
   end
   
