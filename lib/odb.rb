@@ -200,6 +200,9 @@ module ODB
     end
     
     def failed_commit(transaction)
+      @transaction_objects.each do |fname|
+        File.unlink(fname)
+      end
       @transaction_objects = nil
     end
 
