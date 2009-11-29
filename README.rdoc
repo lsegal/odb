@@ -45,6 +45,7 @@ mark a method as persistent, simply include the +Persistent+ module:
     attr_accessor :title, :body
     
     def initialize(title, body)
+      super() # needed for Persistent's constructor
       @title, @body = title, body
     end
   end
