@@ -237,9 +237,9 @@ module ODB
   end
   
   class HashStore < Database
-    def initialize
+    def initialize(store = {})
       super(nil)
-      @store = {}
+      @store = store
     end
     
     def begin_commit(transaction)
@@ -247,7 +247,9 @@ module ODB
     end
     
     def commit(transaction)
-      @store.update(@transaction)
+      @transaction.each do |key, val|
+        @store[key] = val
+      end
       @transaction = nil
     end
     
@@ -261,6 +263,26 @@ module ODB
     
     def write_object(key, value)
       @transaction[key] = value
+    end
+  end
+
+  class RedisStore < HashStore
+    def initialize(store = Redis.new)
+      super
+      @key_map = read_object("__key_map") if @store["__key_map"]
+    end
+    
+    def commit(transaction)
+      @store["__key_map"] = Marshal.dump(key_map)
+      super
+    end
+
+    def read_object(key)
+      Marshal.load(@store[key])
+    end
+
+    def write_object(key, value)
+      @transaction[key] = Marshal.dump(value)
     end
   end
   
@@ -413,13 +435,13 @@ class Hash
   def __serialize__(reference = false)
     obj = super
     unless reference
-      obj.replace Hash[*map {|k, v| [k.__serialize__(true), v.__serialize__(true)] }.flatten]
+      obj.replace Hash[*map {|k, v| [k.__serialize__(true), v.__serialize__(true)] }]
     end
     obj
   end
   
   def __deserialize__(db = ODB::Database.current)
-    replace Hash[*map {|k, v| [k.__deserialize__(db), v.__deserialize__(db)] }.flatten]
+    replace Hash[*map {|k, v| [k.__deserialize__(db), v.__deserialize__(db)] }]
   end
 end
 
