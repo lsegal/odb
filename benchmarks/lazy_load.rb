@@ -34,7 +34,8 @@ p $db[:list1]
 puts
 
 Benchmark.bmbm do |x|
-  x.report("lazy") { TIMES.times { $db.clear_cache; $db[:list1] } }
-  x.report("load") { TIMES.times { $db.clear_cache; $db[:list2] } }
+  x.report("autoload") { TIMES.times { $db.clear_cache; $db[:list2] } }
+  x.report("lazyload") { TIMES.times { $db.clear_cache; $db[:list1] } }
+  x.report("lazy-explicit-load") { TIMES.times { $db.clear_cache; $db[:list2].list } }
 end
 
