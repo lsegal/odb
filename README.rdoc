@@ -162,10 +162,10 @@ to be very fast while maintaining associations transparently.
 
 == The Supported Data Stores
 
-Currently ODB has support for in-memory, on-disk and JSON (also on-disk)
-data stores. One benefit is that it is possible to write a wrapper for any
-key-value data store such as memcached, redis, mongo, etc.. To implement
-a data store, you just need to implement the +read_object+ and +write_object+
+Currently ODB has support for in-memory, on-disk, JSON (also on-disk) and
+redis data stores. One benefit is that it is possible to write a wrapper for 
+any key-value data store such as memcached, mongo, etc.. To implement a
+data store, you just need to implement the +read_object+ and +write_object+
 methods in the +Database+ class.
 
 == Copyright & License
