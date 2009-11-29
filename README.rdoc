@@ -8,6 +8,15 @@ more recently, MagLev. The goal is to make object persistence as invisible
 as possible in Ruby, though full transparency (as MagLev attempts) can
 never really be possible.
 
+== Features
+
+ODB supports:
+
+ * Transparent Persistent Objects
+ * ACID Transactions
+ * Implicit Key Names
+ * Lazy Loading of Attributes
+
 == Quick Start
 
 ODB looks very similar to a standard key-value store database such as 
@@ -25,7 +34,7 @@ This is very basic usage. Unlike key-value stores, however, it is possible
 to store and access objects implicitly, without directly assigning them
 a key. We will see this more with persistent objects
   
-== Persistent Objects
+== Transparent Persistent Objects
 
 Persistent objects allow a more transparent form of storing objects. To
 mark a method as persistent, simply include the +Persistent+ module:
@@ -42,7 +51,7 @@ mark a method as persistent, simply include the +Persistent+ module:
   
 You can now benefit from transparent saves in transactions.
 
-== Transactions
+== ACID Transactions
 
 ODB supports very basic transactions right now. A simple example of a
 transaction is:
@@ -63,6 +72,18 @@ a modified object, queue it:
     post.title = "something else"
     post.__queue__
   end
+  
+Transactions occur in an all-or-nothing fashion, so if an exception is raised
+in the middle of a save, nothing will be persisted:
+
+  db.transaction do
+    db[:post1] = Post.new
+    raise "exception!"
+    db[:post2] = Post.new
+  end
+  
+  db[:post1] # => nil
+  db[:post2] # => nil
   
 == Implict Key Names
 
@@ -94,6 +115,42 @@ We can access both objects as:
 
   db[:title1] # => #<Post:0x000001011dfe30 @title="title1", @body="body1">
   db[:title2] # => #<Post:0x00000101379550 @title="title2", @body="body2">
+  
+== Lazy Loading of Attributes
+
+ODB can perform lazy-loading on any standard Ruby attribute. When an object
+is deserialized, each instance variable is checked to see if there is a 
+zero-argument method by the same name. If so, it (temporarily) replaces the
+method with a stub that will lazily load the object when the attribute is
+read. Consider this example:
+
+  class Post
+    include ODB::Persistent
+    attr_accessor :title, :comments
+
+    def initialize(title) 
+      super()
+      @comments = [] 
+      @title = title
+    end
+  
+    def __serialize_key__; @title.to_sym end
+  end
+
+  # Create a post with 100 comments
+  db = ODB.new
+  db.transaction do
+    post = Post.new("hello")
+    100.times {|i| post.comments << "This is comment ##{i}" }
+  end
+
+  db.clear_cache # force de-serialization 
+  p db[:hello]
+  # => #<Post:0x0b149008 @comments=(lazyload value), @title=(lazyload value)>
+  p db[:hello].title 
+  # => "hello"
+  p db[:hello].comments
+  # => ["This is comment #0", "This is comment #1", ...]
 
 == The Supported Data Stores
 
