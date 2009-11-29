@@ -75,17 +75,42 @@ module ODB
       key = (key_cache[key] = object_key(value)) if Symbol === key && object_key(value) != key
 
       if Transaction.current.in_commit?
-        puts "Committing #{key} => #{value.inspect}" if $ODB_DEBUG
+        serialized = value.__serialize__
+        puts "Committing #{key} => #{serialized.inspect}" if $ODB_DEBUG
         @object_map[key] = value.object_id
-        write_object(key, value.__serialize__)
+        write_object(key, serialized)
       else
         value.__queue__
       end
     end
   end
   
+  class TransactionSet
+    include Enumerable
+    
+    def initialize
+      @set = {}
+    end
+    
+    def push(*args)
+      args.each do |arg|
+        @set[arg.object_id] = arg
+      end
+    end
+    def <<(*args) push(*args) end
+    
+    def include?(object)
+      @set.has_key?(object.object_id)
+    end
+      
+    def each(&block)
+      @set.values.each(&block)
+    end
+  end
+  
   class Transaction
     attr_accessor :objects
+    attr_reader :db
 
     def self.transactions
       Thread.current['__odb_transactions'] ||= []
@@ -96,7 +121,7 @@ module ODB
     end
     
     def initialize(db = ODB.current, *keys, &block)
-      @objects = Set.new
+      @objects = TransactionSet.new
       @db = db
       @committing = false
       transaction(*keys, &block) if block_given?
@@ -107,7 +132,7 @@ module ODB
       self.class.transactions.push(self)
       yield
       (persistent_objects - objects_before).each {|obj| obj.__queue__(self) }
-      keys.each {|key| @db[key].__queue__(self) }
+      keys.each {|key| db[key].__queue__(self) }
       commit
       self.class.transactions.pop
     end
@@ -119,14 +144,17 @@ module ODB
     def commit
       @committing = true
       objs = objects.to_a
+      self.objects = TransactionSet.new
+      objs.each {|o| o.__queue__(self) }
+      objs = objects.to_a
       self.objects.freeze
       while objs.size > 0
         object = objs.pop
-        @db.add(object)
+        db.add(object)
       end
-      @db.after_commit
+      db.after_commit
     ensure
-      self.objects = Set.new
+      self.objects = TransactionSet.new
       @committing = false
     end
     
@@ -203,6 +231,10 @@ module ODB
     
     class Fixnum < ImmediateType; end 
     class Symbol < ImmediateType; end
+    
+    module LazyValue
+      def inspect; "(lazyload value)" end
+    end
   end
 end
 
@@ -223,9 +255,12 @@ class Object
   end
   
   def __queue__(transaction = ODB::Transaction.current)
-    return if transaction.objects.include?(self) || __immediate__
-    puts "Queuing #{__serialize_key__}" if $ODB_DEBUG
+    return if __immediate__
+    included = transaction.objects.include?(self)
     transaction.objects << self
+    return unless transaction.in_commit?
+    puts "Queuing #{__serialize_key__}" if $ODB_DEBUG
+    return if included
     instance_variables.each do |ivar|
       instance_variable_get(ivar).__queue__(transaction)
     end
@@ -235,7 +270,24 @@ class Object
     puts "Deserializing #{self.class}" if $ODB_DEBUG
     instance_variables.each do |ivar|
       obj = instance_variable_get(ivar)
-      instance_variable_set(ivar, obj.__deserialize__(db))
+      methname = ivar[1..-1]
+      meth = method(methname)
+      if meth && meth.arity == 0
+        self.class.module_eval(<<-eof, __FILE__, __LINE__ + 1)
+          def __lazy_#{methname}_unloaded
+            #{ivar} = #{ivar}.call
+            self.class.send(:alias_method, :#{methname}, "__lazy_#{methname}_loaded")
+            undef __lazy_#{methname}_unloaded
+            #{methname}
+          end
+        
+          alias __lazy_#{methname}_loaded #{methname}
+          alias #{methname} __lazy_#{methname}_unloaded
+        eof
+        instance_variable_set(ivar, lambda { obj.__deserialize__(db) }.extend(ODB::Types::LazyValue))
+      else
+        instance_variable_set(ivar, obj.__deserialize__(db))
+      end
     end
     self
   end
