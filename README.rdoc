@@ -12,10 +12,10 @@ never really be possible.
 
 ODB supports:
 
- * Transparent Persistent Objects
- * ACID Transactions
- * Implicit Key Names
- * Lazy Loading of Attributes
+* Transparent Persistent Objects
+* ACID Transactions
+* Implicit Key Names
+* Lazy Loading of Attributes
 
 == Quick Start
 

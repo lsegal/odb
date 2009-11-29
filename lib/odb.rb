@@ -102,13 +102,13 @@ module ODB
     
     def push(*args)
       args.each do |arg|
-        @set[arg.__serialize_key__] = arg
+        @set[arg.object_id] = arg
       end
     end
     def <<(*args) push(*args) end
     
     def include?(object)
-      @set.has_key?(object.__serialize_key__)
+      @set.has_key?(object.object_id)
     end
       
     def each(&block)

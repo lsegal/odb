@@ -1,4 +1,4 @@
-require File.dirname(__FILE__) + "/../lib/odb"
+require_relative '../lib/odb'
 require 'yard'
 
 class Post
@@ -34,7 +34,7 @@ describe ODB::Database do
   it "should save a complex object" do
     YARD.parse(File.dirname(__FILE__) + '/../lib/**/*.rb')
     db = ODB.new(ODB::FileStore.new("yard"))
-    db[:namespace] = YARD::Registry.at('ODB::Types')
+    db[:namespace] = YARD::Registry.instance.send(:namespace)
     
     db = ODB.new(ODB::FileStore.new("yard"))
     db[:namespace].should == YARD::Registry.instance.send(:namespace)
