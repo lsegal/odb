@@ -16,7 +16,7 @@ module ODB
   end
   
   class Database
-    attr_reader :name, :key_cache
+    attr_reader :name, :key_map
 
     class << self
       attr_accessor :current
@@ -25,26 +25,28 @@ module ODB
     def initialize(name)
       self.class.current = self unless self.class.current
       @name = name
-      @key_cache = {}
-      @object_map = {}
+      @key_map = {}
+      clear_cache
     end
 
     def transaction(*names, &block)
       Transaction.new(self, *names, &block)
     end
     
+    def clear_cache; @object_cache = {} end
+    
     def read(key)
-      key = key_cache[key] if Symbol === key && key_cache[key]
+      key = key_map[key] if Symbol === key && key_map[key]
       
       begin
-        if oid = @object_map[key]
+        if oid = @object_cache[key]
           return ObjectSpace._id2ref(oid)
         end
       rescue RangeError
       end
 
       obj = read_object(key)
-      @object_map[key] = obj.object_id
+      @object_cache[key] = obj.object_id
       obj.__deserialize__(self)
     end
     
@@ -72,12 +74,12 @@ module ODB
     private
     
     def write_in_transaction(key, value)
-      key = (key_cache[key] = object_key(value)) if Symbol === key && object_key(value) != key
+      key = (key_map[key] = object_key(value)) if Symbol === key && object_key(value) != key
 
       if Transaction.current.in_commit?
         serialized = value.__serialize__
         puts "Committing #{key} => #{serialized.inspect}" if $ODB_DEBUG
-        @object_map[key] = value.object_id
+        @object_cache[key] = value.object_id
         write_object(key, serialized)
       else
         value.__queue__
@@ -167,14 +169,14 @@ module ODB
     def initialize(name)
       super(name)
       FileUtils.mkdir_p(name)
-      if File.file?(resource("__key_cache"))
-        @key_cache = unmarshal(IO.read(resource("__key_cache")))
+      if File.file?(resource("__key_map"))
+        @key_map = unmarshal(IO.read(resource("__key_map")))
       end
     end
     
     def after_commit
-      File.open(resource("__key_cache"), "wb") do |file|
-        file.write(marshal(key_cache))
+      File.open(resource("__key_map"), "wb") do |file|
+        file.write(marshal(key_map))
       end
     end
 
