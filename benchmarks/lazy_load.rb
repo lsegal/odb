@@ -28,6 +28,11 @@ $db.transaction do
   $db[:list2] = list2
 end
 
+puts "Lazy loaded object:"
+$db.clear_cache
+p $db[:list1]
+puts
+
 Benchmark.bmbm do |x|
   x.report("lazy") { TIMES.times { $db.clear_cache; $db[:list1] } }
   x.report("load") { TIMES.times { $db.clear_cache; $db[:list2] } }
