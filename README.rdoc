@@ -152,6 +152,13 @@ read. Consider this example:
   # => "hello"
   p db[:hello].comments
   # => ["This is comment #0", "This is comment #1", ...]
+  
+One of the benefits of shallow reads (a.k.a. lazy loading) is that you're not
+immediately deserializing associations. If you had a complex object structure
+that held cyclic associations or associations to a root object in your tree,
+you could end up de-serializing the entire database in one read, which would
+obviously not be a good thing. ODB's lazy attributes allow reads on an object
+to be very fast while maintaining associations transparently.
 
 == The Supported Data Stores
 
